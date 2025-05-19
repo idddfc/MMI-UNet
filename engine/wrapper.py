@@ -198,25 +198,27 @@ class MMIUNet_Wrapper(pl.LightningModule):
         x, y = batch
         preds = self(x)
         loss = self.loss_fn(preds, y)
-        # out_path = "/home/work/bui/LanGuideMedSeg-MICCAI2023/results/mosmed/MMIUNet/"
+        
+        out_path = "/home/huangzhongsheng/LanGuideMedSeg-MICCAI2023/results/mosmed/MMIUNet/"
         # Save results for illustration
-        # for i in range(x[0].size(0)):
-        #     img = x[0][i].cpu().numpy()
-        #     mask = y[i].cpu().numpy()
-        #     mask = np.stack([mask, mask, mask])
-        #     mask = np.squeeze(mask)
+        for i in range(x[0].size(0)):
+            img = x[0][i].cpu().numpy()
+            mask = y[i].cpu().numpy()
+            mask = np.stack([mask, mask, mask])
+            mask = np.squeeze(mask)
 
-        #     img = img.transpose((1, 2, 0))
-        #     img = (img* 255.0).astype(np.float16)
-        #     mask = mask.transpose((1, 2, 0))
-        #     mask = (mask * 255.0).astype(np.uint8)
-        #     pred = (preds[i] > 0.5).cpu().numpy()
-        #     pred = (pred * 255.0).astype(np.uint8)
-        #     pred = np.stack([pred, pred, pred])
-        #     pred = np.squeeze(pred)
-        #     pred = pred.transpose((1, 2, 0)).astype(np.uint8)
-        #     cv2.imwrite(out_path + f"mask_{ids[i]}", mask)
-        #     cv2.imwrite(out_path + f"pred_{ids[i]}", pred) 
+            img = img.transpose((1, 2, 0))
+            img = (img* 255.0).astype(np.float16)
+            mask = mask.transpose((1, 2, 0))
+            mask = (mask * 255.0).astype(np.uint8)
+            pred = (preds[i] > 0.5).cpu().numpy()
+            pred = (pred * 255.0).astype(np.uint8)
+            pred = np.stack([pred, pred, pred])
+            pred = np.squeeze(pred)
+            pred = pred.transpose((1, 2, 0)).astype(np.uint8)
+            cv2.imwrite(out_path + f"mask_batch{batch_idx}_{i}.png", mask)
+            cv2.imwrite(out_path + f"pred_batch{batch_idx}_{i}.png", pred)
+
 
         return {'loss': loss, 'preds': preds.detach(), 'y': y.detach()}  
     

@@ -59,10 +59,14 @@ class QaTa(Dataset):
         data = trans(data)
 
         image, gt, token,mask = data['image'], data['gt'], data['token'], data['mask']
-        gt = torch.where(gt==255,1,0)
-        # For MosMedData
-        gt = (torch.sum(gt, axis=0)/3.0).int()
-        gt = torch.unsqueeze(gt, 0)
+        # 处理 RGB 转灰度 + 二值化
+        if gt.shape[0] == 3:
+            gt = gt.float().mean(dim=0, keepdim=True)
+        else:
+            gt = gt.float()
+
+        gt = (gt > 0.5).long()
+
         text = {'input_ids':token.squeeze(dim=0), 'attention_mask':mask.squeeze(dim=0)} 
 
         return ([image, text], gt)
