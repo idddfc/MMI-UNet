@@ -56,7 +56,9 @@ class GuideDecoderLayer(nn.Module):
         self.norm1 = nn.LayerNorm(in_channels)
         self.norm2 = nn.LayerNorm(in_channels)
 
-        self.scale = nn.Parameter(torch.tensor(0.01),requires_grad=True)
+        #self.scale = nn.Parameter(torch.tensor(0.01),requires_grad=True)
+        # 建议改成每通道可学习、并初始更大一些
+        self.scale = nn.Parameter(torch.ones(in_channels) * 0.1, requires_grad=True)
 
 
     def forward(self,x,txt):
@@ -470,3 +472,123 @@ class Dec_SpatialAttention(nn.Module):
         out = torch.cat([avg_out, max_out], dim=1)
         out = self.conv1(out)
         return x*self.sigmoid(out)
+
+
+#切成patch与GTs交叉注意力
+class PatchGTSCrossAttention(nn.Module):
+    """
+    Patch-wise self-attention on visual tokens followed by cross-attention with GTS tokens.
+    """
+    def __init__(self,
+                 in_channels: int,
+                 patch_size: int,
+                 num_heads: int,
+                 gts_token_dim: int,
+                 use_positional: bool = True):
+        super().__init__()
+        self.in_channels = in_channels
+        self.patch_size = patch_size
+        self.num_heads = num_heads
+        self.gts_token_dim = gts_token_dim
+
+        # Project visual patches to tokens
+        self.to_patch_tokens = nn.Conv2d(in_channels,
+                                         in_channels,
+                                         kernel_size=patch_size,
+                                         stride=patch_size,
+                                         bias=False)
+        # Positional encoding for patches
+        if use_positional:
+            self.pos_enc = nn.Parameter(torch.randn(1, 0, in_channels))  # will set in forward
+        else:
+            self.pos_enc = None
+
+        # Self-attention over patches
+        self.self_attn = nn.MultiheadAttention(embed_dim=in_channels,
+                                               num_heads=num_heads,
+                                               batch_first=True)
+        # Cross-attention: patches query, GTS tokens key/value
+        self.cross_attn = nn.MultiheadAttention(embed_dim=in_channels,
+                                                num_heads=num_heads,
+                                                batch_first=True)
+        # Layer norms and feed-forward
+        self.norm1 = nn.LayerNorm(in_channels)
+        self.norm2 = nn.LayerNorm(in_channels)
+        self.ffn = nn.Sequential(
+            nn.Linear(in_channels, in_channels * 4),
+            nn.GELU(),
+            nn.Linear(in_channels * 4, in_channels)
+        )
+        self.norm3 = nn.LayerNorm(in_channels)
+
+    def forward(self, x: torch.Tensor, gts_tokens: torch.Tensor):
+        """
+        x: [B, C, H, W] feature map
+        gts_tokens: [B, M, C] ground-truth segmentation tokens (e.g., mask patches)
+        """
+        B, C, H, W = x.shape
+        # Extract non-overlapping patches -> [B, C, P_H, P_W]
+        patches = self.to_patch_tokens(x)
+        # Flatten patches to sequence of tokens
+        # new H_p = H//patch_size, W_p = W//patch_size
+        H_p, W_p = patches.shape[2], patches.shape[3]
+        N = H_p * W_p
+        tokens = rearrange(patches, 'b c h w -> b (h w) c')  # [B, N, C]
+
+        # Add positional encoding if available
+        if self.pos_enc is None or self.pos_enc.shape[1] != N:
+            self.pos_enc = nn.Parameter(torch.randn(1, N, C), requires_grad=True)
+        tokens = tokens + self.pos_enc
+
+        # 1) Patch-wise self-attention
+        res = tokens
+        tokens = self.norm1(tokens)
+        tokens, _ = self.self_attn(tokens, tokens, tokens)
+        tokens = tokens + res
+
+        # 2) Cross-attention with GTS
+        res2 = tokens
+        tokens = self.norm2(tokens)
+        tokens, _ = self.cross_attn(query=tokens,
+                                     key=gts_tokens,
+                                     value=gts_tokens)
+        tokens = tokens + res2
+
+        # 3) Feed-forward
+        res3 = tokens
+        tokens = self.norm3(tokens)
+        tokens = self.ffn(tokens)
+        tokens = tokens + res3
+
+        # Restore to feature map shape
+        out = rearrange(tokens, 'b (h w) c -> b c h w', h=H_p, w=W_p)
+        # Upsample back to original resolution
+        out = nn.functional.interpolate(out,
+                                        size=(H, W),
+                                        mode='bilinear',
+                                        align_corners=False)
+        return out
+
+# Example integration into GuideDecoder
+class GuideDecoderWithPatchAttention(nn.Module):
+    def __init__(self, in_channels, out_channels, spatial_size, text_len, patch_size=4, num_heads=4):
+        super().__init__()
+        self.patch_attn = PatchGTSCrossAttention(in_channels,
+                                                 patch_size,
+                                                 num_heads,
+                                                 gts_token_dim=in_channels)
+        self.guide_decoder = GuideDecoder(in_channels, out_channels, spatial_size, text_len)
+
+    def forward(self, vis, skip_vis, txt, gts_tokens=None):
+        # vis: [B, N, C] -> reshape to map
+        B, N, C = vis.shape
+        H = W = int(N ** 0.5)
+        vis_map = rearrange(vis, 'b (h w) c -> b c h w', h=H, w=W)
+        # apply patch + GTS attention if tokens provided
+        if gts_tokens is not None:
+            attn_map = self.patch_attn(vis_map, gts_tokens)
+            vis_map = vis_map + attn_map
+        # flatten back
+        vis_flat = rearrange(vis_map, 'b c h w -> b (h w) c')
+        # decode as usual
+        return self.guide_decoder(vis_flat, skip_vis, txt)

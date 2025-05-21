@@ -69,7 +69,7 @@ class QaTa(Dataset):
 
         text = {'input_ids':token.squeeze(dim=0), 'attention_mask':mask.squeeze(dim=0)} 
 
-        return ([image, text], gt)
+        return (image, text, gt)
 
     def transform(self,image_size=[224,224]):
 

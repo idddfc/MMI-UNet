@@ -72,7 +72,12 @@ class LanGuideMedSeg(nn.Module):
 
     def forward(self, data):
 
-        image, text = data
+        # 支持 (image, text) 或 (image, text, mask)
+        if isinstance(data, (tuple, list)) and len(data) == 3:
+            image, text, _ = data
+        else:
+            image, text = data
+
         if image.shape[1] == 1:   
             image = repeat(image,'b 1 h w -> b c h w',c=3)
 
@@ -115,15 +120,39 @@ class MMIUNet_GuideDecoder(nn.Module):
         self.fusion3 = Bridger(d_img=channels[2], d_model=channels[2], stage_id=3)
         self.fusion4 = Bridger(d_img=channels[3], d_model=channels[3], stage_id=4)
 
-        self.decoder16 = GuideDecoder(feature_dim[0],feature_dim[1],self.spatial_dim[0],24)
-        self.decoder8 = GuideDecoder(feature_dim[1],feature_dim[2],self.spatial_dim[1],12)
-        self.decoder4 = GuideDecoder(feature_dim[2],feature_dim[3],self.spatial_dim[2],9)
+        # self.decoder16 = GuideDecoder(feature_dim[0],feature_dim[1],self.spatial_dim[0],24)
+        # self.decoder8 = GuideDecoder(feature_dim[1],feature_dim[2],self.spatial_dim[1],12)
+        # self.decoder4 = GuideDecoder(feature_dim[2],feature_dim[3],self.spatial_dim[2],9)
+        self.decoder16 = GuideDecoderWithPatchAttention(
+            in_channels=feature_dim[0],    # 768
+            out_channels=feature_dim[1],   # 384
+            spatial_size=self.spatial_dim[0],  # 7
+            text_len=24,
+            patch_size=4,
+            num_heads=4
+        )
+        self.decoder8 = GuideDecoderWithPatchAttention(
+            in_channels=feature_dim[1],    # 384
+            out_channels=feature_dim[2],   # 192
+            spatial_size=self.spatial_dim[1],  # 14
+            text_len=12,
+            patch_size=4,
+            num_heads=4
+        )
+        self.decoder4 = GuideDecoderWithPatchAttention(
+            in_channels=feature_dim[2],    # 192
+            out_channels=feature_dim[3],   # 96
+            spatial_size=self.spatial_dim[2],  # 28
+            text_len=9,
+            patch_size=4,
+            num_heads=4
+        )
         self.decoder1 = SubpixelUpsample(2,feature_dim[3],24,4)
         self.out = UnetOutBlock(2, in_channels=24, out_channels=1)
 
     def forward(self, data):
         encoder_feats = []
-        image, text = data
+        image, text,mask = data
         if image.shape[1] == 1:   
             image = repeat(image,'b 1 h w -> b c h w',c=3)
 
@@ -145,10 +174,22 @@ class MMIUNet_GuideDecoder(nn.Module):
             # encoder_feats = encoder_feats[1:]  # 4 8 16 32   convnext: Embedding + 4 layers feature map
             encoder_feats = [rearrange(item,'b c h w -> b (h w) c') for item in encoder_feats] 
 
+        # 在每层解码前，把 mask 切成 patch token：
+        # 这里示例 patch_size=4，与 GuideDecoderWithPatchAttention 保持一致
+        patch_size = 4
+        # [B, 1, H, W] -> unfold -> [B, patch_area, num_patches]
+        gts_unf = nn.functional.unfold(
+            mask.float(), 
+            kernel_size=patch_size, 
+            stride=patch_size
+        )  
+        # 转成 [B, num_patches, patch_area]
+        gts_tokens = gts_unf.permute(0, 2, 1)
+
         os32 = encoder_feats[3]
-        os16 = self.decoder16(os32, encoder_feats[2], text_embeds[-1])
-        os8 = self.decoder8(os16, encoder_feats[1], text_embeds[-1])
-        os4 = self.decoder4(os8, encoder_feats[0], text_embeds[-1])
+        os16 = self.decoder16(os32, encoder_feats[2], text_embeds[-1], gts_tokens)
+        os8 = self.decoder8(os16, encoder_feats[1], text_embeds[-1], gts_tokens)
+        os4 = self.decoder4(os8, encoder_feats[0], text_embeds[-1], gts_tokens)
         os4 = rearrange(os4, 'B (H W) C -> B C H W',H=self.spatial_dim[-1],W=self.spatial_dim[-1])
         os1 = self.decoder1(os4)
 
@@ -218,7 +259,13 @@ class MMIUNet_V2(nn.Module):
 
     def forward(self, data):
         encoder_feats = []
-        image, text = data
+
+        # 支持 (image, text) 或 (image, text, mask)
+        if isinstance(data, (tuple, list)) and len(data) == 3:
+            image, text, _ = data
+        else:
+            image, text = data
+            
         if image.shape[1] == 1:   
             image = repeat(image,'b 1 h w -> b c h w', c=3)
 
