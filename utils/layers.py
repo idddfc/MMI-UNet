@@ -580,15 +580,15 @@ class GuideDecoderWithPatchAttention(nn.Module):
         self.guide_decoder = GuideDecoder(in_channels, out_channels, spatial_size, text_len)
 
     def forward(self, vis, skip_vis, txt, gts_tokens=None):
-        # vis: [B, N, C] -> reshape to map
-        B, N, C = vis.shape
-        H = W = int(N ** 0.5)
-        vis_map = rearrange(vis, 'b (h w) c -> b c h w', h=H, w=W)
-        # apply patch + GTS attention if tokens provided
+        vis_out = self.guide_decoder(vis, skip_vis, txt)  # [B, N, C]
         if gts_tokens is not None:
+            B, N, C = vis_out.shape
+            H = W = int(N ** 0.5)
+            vis_map = rearrange(vis_out, 'b (h w) c -> b c h w', h=H, w=W)
+
             attn_map = self.patch_attn(vis_map, gts_tokens)
             vis_map = vis_map + attn_map
-        # flatten back
-        vis_flat = rearrange(vis_map, 'b c h w -> b (h w) c')
-        # decode as usual
-        return self.guide_decoder(vis_flat, skip_vis, txt)
+
+            vis_out = rearrange(vis_map, 'b c h w -> b (h w) c')
+
+        return vis_out

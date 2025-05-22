@@ -128,7 +128,7 @@ class MMIUNet_GuideDecoder(nn.Module):
             out_channels=feature_dim[1],   # 384
             spatial_size=self.spatial_dim[0],  # 7
             text_len=24,
-            patch_size=4,
+            patch_size=16,
             num_heads=4
         )
         self.decoder8 = GuideDecoderWithPatchAttention(

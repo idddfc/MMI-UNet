@@ -86,6 +86,7 @@ if __name__ == '__main__':
                         devices=args.device,
                         callbacks=[model_ckpt,early_stopping],
                         enable_progress_bar=False,
+                        precision=16,
                         ) 
 
     ## 3. start training
